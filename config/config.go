@@ -66,7 +66,9 @@ type Module struct {
 	Databits int            `yaml:"databits"`
 	Stopbits int            `yaml:"stopbits"`
 	Parity   string         `yaml:"parity"`
-	Metrics  []MetricDef    `yaml:"metrics"`
+	Metrics  *[]MetricDef   `yaml:"metrics"`
+	// TODO: Either can be null because user can use either a block read or metrics. Error if there is none of each?
+	BlockReads *[]BlockRead `yaml:"block_read"`
 }
 
 // RegisterAddr specifies the register in the possible output of _digital
@@ -182,6 +184,14 @@ const (
 	MetricTypeCounter MetricType = "counter"
 )
 
+// BlockRead defines a block of registers to read from a modbus device,
+// with MetricDef definitions to pull from the block
+type BlockRead struct {
+	StartAddress RegisterAddr `yaml:"startAddress"`
+	Count        uint16       `yaml:"count"`
+	Metrics      []MetricDef  `yaml:"metrics"`
+}
+
 // MetricDef defines how to construct Prometheus metrics based on one or more
 // Modbus registers.
 type MetricDef struct {
@@ -293,15 +303,18 @@ func (s *Module) validate() error {
 	}
 
 	// track that error if we have no register definitions
-	if len(s.Metrics) == 0 {
-		noRegErr := fmt.Errorf("no metric definitions found in module %s", s.Name)
-		err = multierror.Append(err, noRegErr)
-	}
-
-	for _, def := range s.Metrics {
-		if err := def.validate(); err != nil {
-			return fmt.Errorf("failed to validate module %v: %v", s.Name, err)
+	if s.Metrics != nil || s.BlockReads != nil {
+		if len(*s.Metrics) == 0 || len(*s.BlockReads) == 0 {
+			noRegErr := fmt.Errorf("no metric or block_read definitions found in module %s", s.Name)
+			err = multierror.Append(err, noRegErr)
 		}
+
+		for _, def := range *s.Metrics {
+			if err := def.validate(); err != nil {
+				return fmt.Errorf("failed to validate module %v: %v", s.Name, err)
+			}
+		}
+		// TODO: add validation for block_read
 	}
 
 	return err

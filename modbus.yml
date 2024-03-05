@@ -3,33 +3,7 @@ modules:
     # Module name, needs to be passed as parameter by Prometheus.
   - name: "fake"
     protocol: 'tcp/ip'
-    metrics:
-        # Name of the metric.
-      - name: "power_consumption_total"
-        # Help text of the metric.
-        help: "represents the overall power consumption by phase"
-        # Labels to be added to the time series.
-        labels:
-          phase: "1"
-        # Register address.
-        # The first digit of the address is the function code
-        # Supported codes are: 1, 2, 3, 4
-        address: 300022
-        # Datatypes allowed: bool, int16, int32, int64, uint16, uint32, uint64,
-        #   float16, float32, float64
-        # One register holds 16 bits.
-        dataType: int16
-        # Endianness allowed: big, little, mixed, yolo
-        # Optional. If not defined: big.
-        endianness: big
-        # Prometheus metric type: https://prometheus.io/docs/concepts/metric_types/.
-        metricType: counter
-        # Factor can be specified to represent metric value.
-        # Examples: 1, 2, 1.543, 0.01 etc
-        # Factor is multiplied with the scraped value to produce the metric value
-        # Optional.
-        factor: 3.1415926535
-
+    metrics: # Each metric sends a separate request as before
       - name: "some_gauge"
         help: "some help for some gauge"
         address: 30023
@@ -43,3 +17,64 @@ modules:
         dataType: bool
         bitOffset: 0
         metricType: gauge
+
+    blockRead:
+      - startAddress: 3102 # Starting register address
+        # We still include the function code. This will determine that the entire block 
+        # of registers will be read as holding registers etc.
+        count: 32 # Number of addresses starting at 3102 to read from. Will read 3102 - 3134
+        # Make this user definable, but recommend or enforce buffer limits:
+        # - 2000 for I/O registers
+        # - 125 for Modbus RTU
+        # - 123 for Modbus TCP
+        metrics:
+          - name: "current"
+            help: "help message"
+            address: 3103 # Should the function code should be ommitted here?
+            dataType: int16 # This would be a single register
+            labels:
+              phase: "1"
+              building: "power_room"
+            endianness: big
+            metricType: gauge
+            factor: 1
+
+          - name: "voltage"
+            address: 3104
+            dataType: int32 # This would be two registers as each register is 16 bits
+            # So technically this will use addresses 3104 and 3105 to form an int32
+            labels:
+              phase: "1"
+              building: "power_room"
+            endianness: big
+            metricType: gauge
+            factor: 1
+
+          - name: "power"
+            address: 3106
+            dataType: float32 # This would be two registers as each register is 16 bits
+            # So technically this will use addresses 3104 and 3105 to form an int32
+            labels:
+              phase: "1"
+              building: "power_room"
+            endianness: big
+            metricType: gauge
+            factor: 1            
+
+      - startAddress: 3240 # Starting register address
+        count: 8 # Number of addresses starting at 3240 to read from. Will read 3240 - 3248
+        metrics:
+          - name: "coil"
+            help: "some help for some coil"
+            dataType: "bool"
+            address: 124
+            bitOffset: 0
+            metricType: gauge
+
+        # Pulls from the same saved data
+          - name: "coil"
+            help: "some help for some coil"
+            dataType: "bool"            
+            address: 124
+            bitOffset: 1
+            metricType: gauge

@@ -45,6 +45,7 @@ func (e *Exporter) GetConfig() *config.Config {
 // Scrape scrapes the given target via TCP based on the configuration of the
 // specified module returning a Prometheus gatherer with the resulting metrics.
 func (e *Exporter) Scrape(targetAddress string, subTarget byte, moduleName string) (prometheus.Gatherer, error) {
+	metrics := []metric{}
 	reg := prometheus.NewRegistry()
 
 	module := e.config.GetModule(moduleName)
@@ -69,9 +70,26 @@ func (e *Exporter) Scrape(targetAddress string, subTarget byte, moduleName strin
 	// Close tcp connection.
 	defer handler.Close()
 
-	metrics, err := scrapeMetrics(module.Metrics, c)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scrape metrics for module '%v': %v", moduleName, err.Error())
+	// If there is a metrics definition
+	if module.Metrics != nil {
+		m, err := scrapeMetrics(*module.Metrics, c)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scrape metrics for module '%v': %v", moduleName, err.Error())
+		}
+		metrics = append(metrics, m...)
+	}
+
+	// If there is a block read definiton
+	if module.BlockReads != nil {
+		m, err := scrapeBlocks(*module.BlockReads, c)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scrape block metrics for module '%v': %v", moduleName, err.Error())
+		}
+		metrics = append(metrics, m...)
+	}
+
+	if module.BlockReads == nil && module.Metrics == nil {
+		return nil, fmt.Errorf("no block_read or metrics defined in config '%v'", moduleName)
 	}
 
 	if err := registerMetrics(reg, moduleName, metrics); err != nil {
@@ -165,6 +183,138 @@ func keys(m map[string]string) []string {
 	return keys
 }
 
+func scrapeBlocks(definitions []config.BlockRead, c modbus.Client) ([]metric, error) {
+	var byteOffset uint16
+	var metrics []metric
+
+	for _, conf := range definitions {
+		f, modAddress, err := parseModbusAddress(conf.StartAddress, c)
+		if err != nil {
+			return nil, fmt.Errorf("modbus register address parsing failed  %v", modAddress)
+		}
+		rawBlockBytes, err := scrapeBlock(f, modAddress, conf.Count)
+		if err != nil {
+			return nil, fmt.Errorf("modbus block read failed %v, count %v", modAddress, conf.Count)
+		}
+		// Parse into metrics
+		if len(conf.Metrics) == 0 {
+			return []metric{}, nil
+		}
+
+		for _, met := range conf.Metrics {
+			// startAddress is our 0 index on rawBlockBytes
+			difference := uint16(met.Address-conf.StartAddress) * 2
+			// 3100 - 3100 = 0 Data offset
+			// 3101 - 3100 = 1, 1 * 2 = 2 byte data offset
+			// 3104 - 3100 =
+
+			switch met.DataType {
+			case config.ModbusFloat16,
+				config.ModbusInt16,
+				config.ModbusBool,
+				config.ModbusUInt16:
+				byteOffset = 2
+			case config.ModbusFloat32,
+				config.ModbusInt32,
+				config.ModbusUInt32:
+				byteOffset = 4
+			default:
+				byteOffset = 8
+			}
+
+			// Error if the address is less than the start address. This is a given
+			if met.Address < conf.StartAddress {
+				return nil, fmt.Errorf("metric address %v less than start address %v", met.Address, conf.StartAddress)
+			}
+			// 
+			if uint32(met.Address) > uint32(conf.StartAddress)+uint32(conf.Count) {
+				return nil, fmt.Errorf("metric address %v out of range of start address %v + count %v", met.Address, conf.StartAddress, conf.Count)
+			}
+			// TODO: Can this be improved?
+			registerOffset := 0
+			if byteOffset == 4 {
+				registerOffset = 1
+			} else if byteOffset == 8 {
+				registerOffset = 3
+			}
+
+			endAddress := uint32(met.Address) + uint32(registerOffset)
+			addrPlusCount := uint32(conf.StartAddress) + uint32(conf.Count)
+
+			if endAddress > addrPlusCount {
+				return nil, fmt.Errorf("metric address + offset %v out of range of start address + count %v", endAddress, addrPlusCount)
+			}
+
+			// TODO: If an address is out of range of the length of bytes throw error
+
+			// 2 byte offset
+			// parse byte array of 1:3
+			var v float64
+			var err error
+
+			v, err = parseModbusData(met, rawBlockBytes[(difference):(difference)+byteOffset])
+
+			// Create a metric definiton
+			if err != nil {
+				return []metric{}, err
+			}
+			metrics = append(metrics, metric{met.Name, met.Help, met.Labels, v, met.MetricType})
+		}
+	}
+
+	return metrics, nil
+}
+
+func scrapeBlock(f modbusFunc, modAddress uint64, count uint16) ([]byte, error) {
+	rawBlockBytes, err := f(uint16(modAddress), count)
+	if err != nil {
+		return nil, err
+	}
+	return rawBlockBytes, nil
+}
+
+// Parses the address of a metric or block read
+func parseModbusAddress(address config.RegisterAddr, c modbus.Client) (modbusFunc, uint64, error) {
+	var f modbusFunc
+	var modAddress uint64
+	// Here we are parcing Modbus Address from config file
+	// for function code and register address
+	modFunction, err := strconv.ParseUint(fmt.Sprint(address)[0:1], 10, 64)
+	if err != nil {
+		return f, modAddress, fmt.Errorf("modbus function code parsing failed: %v", modFunction)
+	}
+
+	// And here we are parcing Modbus Address from config file
+	// for register address
+	modAddress, err = strconv.ParseUint(fmt.Sprint(address)[1:], 10, 64)
+	if err != nil {
+		return f, modAddress, fmt.Errorf("modbus register address parsing failed  %v", modAddress)
+	}
+
+	if modAddress > 65535 {
+		return f, modAddress, fmt.Errorf("modbus register address is out of range: %v", address)
+	}
+
+	switch modFunction {
+	case 1:
+		f = c.ReadCoils
+	case 2:
+		f = c.ReadDiscreteInputs
+	case 3:
+		f = c.ReadHoldingRegisters
+	case 4:
+		f = c.ReadInputRegisters
+	default:
+		return f, modAddress, fmt.Errorf(
+			"address '%v': metric address should be within the range of 10 - 465535."+
+				"'1xxxxx' for read coil / digital output, '2xxxxx' for read discrete inputs / digital input,"+
+				"'3xxxxx' read holding registers / analog output, '4xxxxx' read input registers / analog input",
+			address,
+		)
+	}
+	return f, modAddress, nil
+}
+
 func scrapeMetrics(definitions []config.MetricDef, c modbus.Client) ([]metric, error) {
 	metrics := []metric{}
 
@@ -173,42 +323,10 @@ func scrapeMetrics(definitions []config.MetricDef, c modbus.Client) ([]metric, e
 	}
 
 	for _, definition := range definitions {
-		var f modbusFunc
 
-		// Here we are parcing Modbus Address from config file
-		// for function code and register address
-		modFunction, err := strconv.ParseUint(fmt.Sprint(definition.Address)[0:1], 10, 64)
+		f, modAddress, err := parseModbusAddress(definition.Address, c)
 		if err != nil {
-			return []metric{}, fmt.Errorf("modbus function code parcing failed: %v", modFunction)
-		}
-
-		// And here we are parcing Modbus Address from config file
-		// for register address
-		modAddress, err := strconv.ParseUint(fmt.Sprint(definition.Address)[1:], 10, 64)
-		if err != nil {
-			return []metric{}, fmt.Errorf("modbus register address parcing failed  %v", modAddress)
-		}
-
-		if modAddress > 65535 {
-			return []metric{}, fmt.Errorf("modbus register address is out of range: %v", definition.Address)
-		}
-
-		switch modFunction {
-		case 1:
-			f = c.ReadCoils
-		case 2:
-			f = c.ReadDiscreteInputs
-		case 3:
-			f = c.ReadHoldingRegisters
-		case 4:
-			f = c.ReadInputRegisters
-		default:
-			return []metric{}, fmt.Errorf(
-				"metric: '%v', address '%v': metric address should be within the range of 10 - 465535."+
-					"'1xxxxx' for read coil / digital output, '2xxxxx' for read discrete inputs / digital input,"+
-					"'3xxxxx' read holding registers / analog output, '4xxxxx' read input registers / analog input",
-				definition.Name, definition.Address,
-			)
+			return []metric{}, fmt.Errorf("metric '%v' %v", definition.Name, err)
 		}
 
 		m, err := scrapeMetric(definition, f, modAddress)
