@@ -3,7 +3,37 @@ modules:
     # Module name, needs to be passed as parameter by Prometheus.
   - name: "fake"
     protocol: 'tcp/ip'
-    metrics: # Each metric sends a separate request as before
+    # Certain modbus devices need special timing workarounds
+    workarounds:
+      # Sleep a certain time after the TCP connection is established
+      sleepAfterConnect: "1s"
+    metrics:
+        # Name of the metric.
+      - name: "power_consumption_total"
+        # Help text of the metric.
+        help: "represents the overall power consumption by phase"
+        # Labels to be added to the time series.
+        labels:
+          phase: "1"
+        # Register address.
+        # The first digit of the address is the function code
+        # Supported codes are: 1, 2, 3, 4
+        address: 300022
+        # Datatypes allowed: bool, int16, int32, int64, uint16, uint32, uint64,
+        #   float16, float32, float64
+        # One register holds 16 bits.
+        dataType: int16
+        # Endianness allowed: big, little, mixed, yolo
+        # Optional. If not defined: big.
+        endianness: big
+        # Prometheus metric type: https://prometheus.io/docs/concepts/metric_types/.
+        metricType: counter
+        # Factor can be specified to represent metric value.
+        # Examples: 1, 2, 1.543, 0.01 etc
+        # Factor is multiplied with the scraped value to produce the metric value
+        # Optional.
+        factor: 3.1415926535
+
       - name: "some_gauge"
         help: "some help for some gauge"
         address: 30023

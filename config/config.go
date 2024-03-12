@@ -15,6 +15,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
 )
@@ -59,14 +60,20 @@ type ListTargets map[string]*Module
 
 // Module defines the configuration parameters of a modbus module.
 type Module struct {
-	Name     string         `yaml:"name"`
-	Protocol ModbusProtocol `yaml:"protocol"`
-	Timeout  int            `yaml:"timeout"`
-	Baudrate int            `yaml:"baudrate"`
-	Databits int            `yaml:"databits"`
-	Stopbits int            `yaml:"stopbits"`
-	Parity   string         `yaml:"parity"`
-	Metrics  *[]MetricDef   `yaml:"metrics"`
+	Name        string         `yaml:"name"`
+	Protocol    ModbusProtocol `yaml:"protocol"`
+	Timeout     int            `yaml:"timeout"`
+	Baudrate    int            `yaml:"baudrate"`
+	Databits    int            `yaml:"databits"`
+	Stopbits    int            `yaml:"stopbits"`
+	Parity      string         `yaml:"parity"`
+	Metrics     *[]MetricDef   `yaml:"metrics"`
+	BlockReads *[]BlockRead `yaml:"block_read"`
+	Workarounds Workarounds    `yaml:"workarounds"`
+}
+
+type Workarounds struct {
+	SleepAfterConnect time.Duration `yaml:"sleepAfterConnect"`
 	// TODO: Either can be null because user can use either a block read or metrics. Error if there is none of each?
 	BlockReads *[]BlockRead `yaml:"block_read"`
 }
